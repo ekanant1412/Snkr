@@ -128,11 +128,12 @@ def ensure_playwright():
         from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright", "-q"])
-        subprocess.check_call(
-            [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    # ติดตั้ง chromium binary เสมอ (จำเป็นบน Streamlit Cloud)
+    subprocess.check_call(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def get_exchange_rate():
