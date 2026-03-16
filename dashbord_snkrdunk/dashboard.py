@@ -55,16 +55,9 @@ with st.sidebar:
     st.markdown("**🔐 Login Session**")
     existing = load_cookies()
     if existing:
-        st.markdown(f'<div class="ok-box">✅ มี cookies {len(existing)} ตัว พร้อมใช้</div>', unsafe_allow_html=True)
-    cookie_input = st.text_area("Paste cookies JSON", height=70,
-        placeholder='[{"name":"ch-session-...","value":"..."}]')
-    if cookie_input and st.button("💾 Save Cookies"):
-        try:
-            save_cookies(json.loads(cookie_input))
-            st.success("Saved!")
-            st.rerun()
-        except Exception as e:
-            st.error(str(e))
+        st.markdown(f'<div class="ok-box">✅ พร้อมใช้งาน</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="no-login">⚠️ ยังไม่มี cookies</div>', unsafe_allow_html=True)
     st.divider()
     max_results = st.slider("จำนวนผลลัพธ์", 5, 30, 15)
     st.divider()
