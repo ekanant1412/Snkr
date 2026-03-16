@@ -1,0 +1,25 @@
+# Streamlit secrets — ห้าม push ขึ้น GitHub เด็ดขาด
+.streamlit/secrets.toml
+
+# Cookies / session files
+snkrdunk_cookies.json
+*.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
