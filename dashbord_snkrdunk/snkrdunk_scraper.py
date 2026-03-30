@@ -352,18 +352,20 @@ def search_products(page, query, max_results=15):
                 var seen = {}, out = [];
                 links.forEach(function(a) {
                     var img = a.querySelector('img');
-                    if (!img || !img.alt || seen[a.href]) return;
-                    seen[a.href] = 1;
-                    var pm = (a.innerText||'').match(/[¥￥]([\\d,]+)/);
+                    if (!img || !img.alt) return;
                     var pidM = a.pathname.match(/\\/(products|apparels|hobbies|luxuries)\\/([^/?#]+)/);
                     if (!pidM) return;
+                    var pid = pidM[2];
+                    if (seen[pid]) return;
+                    seen[pid] = 1;
+                    var pm = (a.innerText||'').match(/[¥￥]([\\d,]+)/);
                     out.push({
                         href: a.href,
                         name: img.alt,
                         image_url: img.src || img.dataset.src || '',
                         price_from_jpy: pm ? parseInt(pm[1].replace(/,/g,'')) : null,
                         category: pidM[1],
-                        product_id: pidM[2]
+                        product_id: pid
                     });
                 });
                 return out;
