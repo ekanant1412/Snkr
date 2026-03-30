@@ -331,21 +331,18 @@ def get_breakdown_from_confirm_page(page, fallback_price=0):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# search_products: ใช้ element wait แทน fixed 2500ms
+# search_products: รอ networkidle เพื่อให้ SPA โหลด API results ครบก่อน
 # ─────────────────────────────────────────────────────────────────────────────
 def search_products(page, query, max_results=15):
     results = []
     try:
         url = f"https://snkrdunk.com/search?keywords={quote(query)}"
-        page.goto(url, wait_until="domcontentloaded", timeout=20000)
-
-        # รอ product card ตัวแรกขึ้นมา แทน sleep 2500ms
+        # networkidle = รอจน network หยุด request — ครอบคลุม SPA ที่โหลด results ผ่าน API
         try:
-            page.locator(
-                'a[href*="/products/"], a[href*="/apparels/"], a[href*="/hobbies/"], a[href*="/luxuries/"]'
-            ).first.wait_for(timeout=6000)
+            page.goto(url, wait_until="networkidle", timeout=30000)
         except Exception:
-            page.wait_for_timeout(1500)
+            # fallback กรณี networkidle timeout (เช่น ads ที่ poll ตลอด)
+            page.wait_for_timeout(4000)
 
         items = page.evaluate(
             """() => {
