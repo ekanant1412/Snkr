@@ -2,13 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY dashbord_snkrdunk/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ให้ Playwright จัดการ dependencies เองตาม OS — ไม่ต้อง list package มือ
 RUN playwright install chromium --with-deps
 
-COPY . .
+COPY dashbord_snkrdunk/ .
 
 EXPOSE 8501
 
