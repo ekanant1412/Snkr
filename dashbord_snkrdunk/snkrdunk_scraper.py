@@ -2,6 +2,7 @@ import os, json
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -15,6 +16,13 @@ SIZE_PATTERN = re.compile(
     r'^(\d{2}(?:\.\d)?cm|(?:[2-9]|10)?XL|[SML]|ONE\s*SIZE|FREE\s*SIZE|\d{1,3}(?:\.\d+)?)$',
     re.IGNORECASE,
 )
+
+# ── ติดตั้ง Playwright แค่ครั้งเดียวต่อ process ──────────────────────────
+_PLAYWRIGHT_READY = False
+
+# ── Cache อัตราแลกเปลี่ยน 1 ชั่วโมง ──────────────────────────────────────
+_rate_cache: dict = {"value": None, "ts": 0.0}
+_RATE_TTL = 3600
 
 
 PARSE_CONFIRM_JS = r"""() => {
@@ -123,30 +131,55 @@ PARSE_CONFIRM_JS = r"""() => {
 }"""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ensure_playwright: ติดตั้งแค่ครั้งแรกต่อ process (ไม่ติดตั้งซ้ำทุก search)
+# ─────────────────────────────────────────────────────────────────────────────
 def ensure_playwright():
+    global _PLAYWRIGHT_READY
+    if _PLAYWRIGHT_READY:
+        return
+
+    # ตรวจว่า chromium ถูกติดตั้งไปแล้วหรือยัง
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            if os.path.exists(p.chromium.executable_path):
+                _PLAYWRIGHT_READY = True
+                return
+    except Exception:
+        pass
+
+    # ติดตั้งเฉพาะเมื่อยังไม่มี
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright", "-q"])
-    # ติดตั้ง chromium binary เสมอ (จำเป็นบน Streamlit Cloud)
+
     subprocess.check_call(
         [sys.executable, "-m", "playwright", "install", "chromium"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    _PLAYWRIGHT_READY = True
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# get_exchange_rate: cache 1 ชั่วโมง ไม่ดึงซ้ำทุก search
+# ─────────────────────────────────────────────────────────────────────────────
 def get_exchange_rate():
+    now = time.time()
+    if _rate_cache["value"] is not None and now - _rate_cache["ts"] < _RATE_TTL:
+        return _rate_cache["value"]
     try:
         r = requests.get("https://api.exchangerate-api.com/v4/latest/JPY", timeout=10)
-        return r.json()["rates"].get("THB", 0.24)
+        rate = r.json()["rates"].get("THB", 0.24)
+        _rate_cache.update({"value": rate, "ts": now})
+        return rate
     except Exception:
-        return 0.24
-
+        return _rate_cache["value"] or 0.24
 
 
 def load_cookies():
-    # 1. ลองอ่านจาก Streamlit Secrets (production)
     try:
         import streamlit as st
         raw = st.secrets.get("SNKRDUNK_COOKIES")
@@ -154,13 +187,12 @@ def load_cookies():
             return json.loads(raw)
     except Exception:
         pass
-    
-    # 2. fallback อ่านจากไฟล์ (local dev)
+
     cookie_file = Path(__file__).parent / "snkrdunk_cookies.json"
     if cookie_file.exists():
         with open(cookie_file) as f:
             return json.load(f)
-    
+
     return []
 
 
@@ -230,17 +262,21 @@ def parse_yen_from_text(text: str) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# get_breakdown_from_confirm_page: เอา fixed 1500ms wait ออก ใช้ element wait
+# ─────────────────────────────────────────────────────────────────────────────
 def get_breakdown_from_confirm_page(page, fallback_price=0):
     parsed = {"product": 0, "shipping": 0, "fee": 0, "auth": 0, "total": 0}
 
+    # รอ element จริง ไม่ใช่ sleep ตาย
     for keyword in ["送料", "購入手数料", "鑑定料", "支払い金額", "内訳"]:
         try:
-            page.locator(f"text={keyword}").first.wait_for(timeout=4000)
+            page.locator(f"text={keyword}").first.wait_for(timeout=5000)
             break
         except Exception:
             pass
 
-    page.wait_for_timeout(1500)
+    # ลบ wait_for_timeout(1500) ออก — ไม่จำเป็นแล้ว
 
     try:
         js_result = page.evaluate(PARSE_CONFIRM_JS)
@@ -249,7 +285,6 @@ def get_breakdown_from_confirm_page(page, fallback_price=0):
     except Exception:
         js_result = {}
 
-    # Python-side fallback from body text, line by line only
     try:
         body_text = page.locator("body").inner_text(timeout=5000)
     except Exception:
@@ -288,7 +323,6 @@ def get_breakdown_from_confirm_page(page, fallback_price=0):
     if not parsed["total"]:
         parsed["total"] = parsed["product"] + parsed["shipping"] + parsed["fee"] + parsed["auth"]
 
-    # Guard: avoid broken parse where all components equal product price
     for k in ("shipping", "fee", "auth"):
         if parsed[k] == parsed["product"] and parsed["product"] > 0:
             parsed[k] = 0
@@ -296,12 +330,23 @@ def get_breakdown_from_confirm_page(page, fallback_price=0):
     return parsed
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# search_products: ใช้ element wait แทน fixed 2500ms
+# ─────────────────────────────────────────────────────────────────────────────
 def search_products(page, query, max_results=15):
     results = []
     try:
         url = f"https://snkrdunk.com/search?keywords={quote(query)}"
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        page.wait_for_timeout(2500)
+
+        # รอ product card ตัวแรกขึ้นมา แทน sleep 2500ms
+        try:
+            page.locator(
+                'a[href*="/products/"], a[href*="/apparels/"], a[href*="/hobbies/"], a[href*="/luxuries/"]'
+            ).first.wait_for(timeout=6000)
+        except Exception:
+            page.wait_for_timeout(1500)
+
         items = page.evaluate(
             """() => {
                 var links = [...document.querySelectorAll(
@@ -362,13 +407,21 @@ def get_size_rows(page):
     return size_rows
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# scrape_sizes: ใช้ go_back() แทน goto() ซ้ำทุก size → เร็วขึ้นมาก
+# ─────────────────────────────────────────────────────────────────────────────
 def scrape_sizes(page, category, product_id):
     sizes = []
     size_list_url = get_size_list_url(category, product_id)
 
     try:
         page.goto(size_list_url, wait_until="domcontentloaded", timeout=20000)
-        page.wait_for_timeout(2500)
+
+        # รอ size button ขึ้นจริง ไม่ sleep ตาย
+        try:
+            page.locator(".size-price-buy-button").first.wait_for(timeout=6000)
+        except Exception:
+            page.wait_for_timeout(1500)
 
         if "login" in page.url or "signup" in page.url:
             return []
@@ -380,8 +433,17 @@ def scrape_sizes(page, category, product_id):
         print(f"    sizes found: {[s['size_label'] for s in size_rows]}")
 
         for i in range(len(size_rows)):
-            page.goto(size_list_url, wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(1800)
+            # size แรก: อยู่หน้า size list แล้ว
+            # size ถัดไป: ใช้ go_back() แทน goto() — เร็วกว่า 2-3x
+            if i > 0:
+                try:
+                    page.go_back(wait_until="domcontentloaded", timeout=12000)
+                except Exception:
+                    page.goto(size_list_url, wait_until="domcontentloaded", timeout=20000)
+                try:
+                    page.locator(".size-price-buy-button").first.wait_for(timeout=4000)
+                except Exception:
+                    page.wait_for_timeout(800)
 
             li_locator = page.locator("li").filter(has=page.locator(".size-price-buy-button"))
             count = li_locator.count()
@@ -397,8 +459,7 @@ def scrape_sizes(page, category, product_id):
 
             try:
                 before_url = page.url
-                btn.scroll_into_view_if_needed(timeout=5000)
-                page.wait_for_timeout(300)
+                btn.scroll_into_view_if_needed(timeout=3000)
 
                 navigation_done = False
                 try:
@@ -413,8 +474,10 @@ def scrape_sizes(page, category, product_id):
 
                 if not navigation_done:
                     for _ in range(20):
-                        page.wait_for_timeout(500)
-                        if page.url != before_url and ("/size/" in page.url or "/sizes/" in page.url or "slide=right" in page.url):
+                        page.wait_for_timeout(400)
+                        if page.url != before_url and (
+                            "/size/" in page.url or "/sizes/" in page.url or "slide=right" in page.url
+                        ):
                             break
 
                 parsed = get_breakdown_from_confirm_page(page, fallback_price=price_jpy)
