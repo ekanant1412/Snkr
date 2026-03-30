@@ -2,12 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY dashbord_snkrdunk/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 RUN playwright install chromium --with-deps
 
-COPY dashbord_snkrdunk/ .
+COPY . .
 
 EXPOSE 8501
 
